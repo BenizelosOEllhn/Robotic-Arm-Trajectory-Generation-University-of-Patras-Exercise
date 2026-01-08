@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pick-and-Place in SE(3) — HW3 Presentation</title>
+  <meta name="description" content="SE(3) trajectory planning, PoE kinematics, Newton–Raphson IK, damped Jacobian control, ROS 2 kinematic simulation." />
+
+  <style>
+    :root{
+      --bg: #0b0f17;
+      --panel: rgba(255,255,255,0.06);
+      --panel2: rgba(255,255,255,0.09);
+      --text: rgba(255,255,255,0.92);
+      --muted: rgba(255,255,255,0.70);
+      --faint: rgba(255,255,255,0.55);
+      --line: rgba(255,255,255,0.12);
+      --accent: #76c7ff;
+      --accent2: #b5ffde;
+      --shadow: 0 18px 60px rgba(0,0,0,0.55);
+      --radius: 18px;
+      --radius2: 26px;
+      --max: 1100px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
+      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    }
+
+    *{ box-sizing:border-box; }
+    html{ scroll-behavior:smooth; }
+    body{
+      margin:0;
+      font-family: var(--sans);
+      color: var(--text);
+      background:
+        radial-gradient(1200px 600px at 15% 12%, rgba(118,199,255,0.20), transparent 60%),
+        radial-gradient(1000px 520px at 85% 18%, rgba(181,255,222,0.14), transparent 60%),
+        radial-gradient(900px 520px at 45% 92%, rgba(118,199,255,0.12), transparent 55%),
+        linear-gradient(180deg, #070a10, var(--bg) 35%, #070a10 100%);
+      overflow-x:hidden;
+    }
+
+    a{ color: inherit; text-decoration:none; }
+    a:hover{ color: rgba(255,255,255,0.98); }
+
+    /* Subtle noise overlay */
+    body::before{
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23n)' opacity='.12'/%3E%3C/svg%3E");
+      mix-blend-mode: overlay;
+      opacity:.18;
+    }
+
+    /* Layout */
+    .container{
+      width: min(var(--max), calc(100% - 44px));
+      margin: 0 auto;
+    }
+
+    /* Top nav */
+    .nav{
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(14px);
+      background: linear-gradient(180deg, rgba(10,14,22,0.82), rgba(10,14,22,0.55));
+      border-bottom: 1px solid var(--line);
+    }
+    .nav-inner{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: 14px 0;
+      gap: 14px;
+    }
+    .brand{
+      display:flex;
+      align-items:center;
+      gap: 12px;
+      min-width: 220px;
+    }
+    .brand-mark{
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      background:
+        radial-gradient(12px 12px at 30% 30%, rgba(255,255,255,0.85), rgba(255,255,255,0.15)),
+        linear-gradient(135deg, rgba(118,199,255,0.85), rgba(181,255,222,0.65));
+      box-shadow: 0 10px 30px rgba(118,199,255,0.15);
+      border: 1px solid rgba(255,255,255,0.22);
+    }
+    .brand h1{
+      font-size: 14px;
+      margin: 0;
+      letter-spacing: 0.5px;
+      font-weight: 650;
+    }
+    .brand span{
+      display:block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+      letter-spacing: 0.2px;
+    }
+    .nav-links{
+      display:flex;
+      align-items:center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content:flex-end;
+    }
+    .nav-links a{
+      font-size: 13px;
+      color: var(--muted);
+      padding: 9px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      transition: 160ms ease;
+    }
+    .nav-links a:hover{
+      background: rgba(255,255,255,0.06);
+      border-color: rgba(255,255,255,0.10);
+      color: rgba(255,255,255,0.92);
+    }
+
+    /* Hero */
+    .hero{
+      padding: 44px 0 22px;
+    }
+    .hero-grid{
+      display:grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+    @media (max-width: 980px){
+      .hero-grid{ grid-template-columns: 1fr; }
+    }
+
+    .card{
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.04));
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: var(--radius2);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-left{
+      padding: 22px 22px 18px;
+      position: relative;
+      overflow:hidden;
+    }
+    .hero-left::after{
+      content:"";
+      position:absolute;
+      inset:-1px;
+      border-radius: var(--radius2);
+      pointer-events:none;
+      background: radial-gradient(600px 260px at 22% 0%, rgba(118,199,255,0.16), transparent 55%);
+    }
+
+    .hero-title{
+      margin: 0 0 8px;
+      font-size: 30px;
+      line-height: 1.12;
+      letter-spacing: -0.4px;
+      font-weight: 740;
+    }
+    .hero-sub{
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+      max-width: 62ch;
+    }
+
+    .chips{
+      display:flex;
+      gap: 10px;
+      flex-wrap:wrap;
+      margin: 12px 0 18px;
+      position: relative;
+      z-index: 2;
+    }
+    .chip{
+      font-size: 12px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.82);
+      letter-spacing: 0.2px;
+    }
+
+    .video-wrap{
+      border-radius: var(--radius);
+      overflow:hidden;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(0,0,0,0.25);
+      position: relative;
+      z-index: 2;
+    }
+    video{
+      width: 100%;
+      height: auto;
+      display:block;
+      background: #000;
+    }
+    .video-caption{
+      padding: 10px 12px 12px;
+      font-size: 12px;
+      color: var(--faint);
+      border-top: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+    }
+
+    .hero-right{
+      padding: 18px 18px;
+      display:flex;
+      flex-direction:column;
+      gap: 12px;
+    }
+    .mini{
+      padding: 14px 14px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+    }
+    .mini h3{
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: 0.25px;
+      color: rgba(255,255,255,0.92);
+    }
+    .mini p{
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .mono{
+      font-family: var(--mono);
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      background: rgba(0,0,0,0.22);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 14px;
+      padding: 10px 12px;
+      overflow:auto;
+      white-space: pre;
+    }
+
+    /* Sections */
+    section{
+      padding: 24px 0;
+    }
+    .section-head{
+      display:flex;
+      align-items:flex-end;
+      justify-content:space-between;
+      gap: 18px;
+      margin: 12px 0 16px;
+    }
+    .section-head h2{
+      margin:0;
+      font-size: 18px;
+      letter-spacing: -0.15px;
+      font-weight: 720;
+    }
+    .section-head p{
+      margin:0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+      max-width: 66ch;
+    }
+
+    .grid-2{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 900px){
+      .grid-2{ grid-template-columns: 1fr; }
+    }
+
+    .panel{
+      padding: 16px 16px;
+      border-radius: var(--radius);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.05);
+    }
+    .panel h3{
+      margin: 0 0 8px;
+      font-size: 14px;
+      letter-spacing: 0.15px;
+      font-weight: 680;
+    }
+    .panel p{
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .panel ul{
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .panel li{ margin: 4px 0; }
+
+    .divider{
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.16), transparent);
+      margin: 18px 0;
+    }
+
+    /* Gallery */
+    .gallery{
+      display:grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 980px){ .gallery{ grid-template-columns: repeat(2,1fr);} }
+    @media (max-width: 640px){ .gallery{ grid-template-columns: 1fr;} }
+
+    .shot{
+      border-radius: 16px;
+      overflow:hidden;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.25);
+      transition: transform 180ms ease, border-color 180ms ease;
+    }
+    .shot:hover{
+      transform: translateY(-2px);
+      border-color: rgba(255,255,255,0.20);
+    }
+    .shot img{
+      width: 100%;
+      height: 180px;
+      object-fit: cover;
+      display:block;
+      background: rgba(255,255,255,0.04);
+    }
+    .shot .cap{
+      padding: 10px 12px 12px;
+      font-size: 12px;
+      color: var(--faint);
+      border-top: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+    }
+
+    /* Footer */
+    footer{
+      padding: 26px 0 44px;
+      color: var(--faint);
+      font-size: 12px;
+      border-top: 1px solid rgba(255,255,255,0.10);
+      margin-top: 20px;
+    }
+
+    /* Small buttons */
+    .btns{
+      display:flex;
+      gap: 10px;
+      flex-wrap:wrap;
+      margin-top: 12px;
+      position: relative;
+      z-index: 2;
+    }
+    .btn{
+      display:inline-flex;
+      align-items:center;
+      gap: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.05);
+      color: rgba(255,255,255,0.88);
+      transition: 160ms ease;
+    }
+    .btn:hover{
+      border-color: rgba(255,255,255,0.22);
+      background: rgba(255,255,255,0.08);
+      transform: translateY(-1px);
+    }
+
+    /* Anchor offset for sticky nav */
+    .anchor{ scroll-margin-top: 78px; }
+  </style>
+</head>
+
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <h1>Pick-and-Place in SE(3)</h1>
+          <span>7-DOF arm • PoE • Newton–Raphson IK • Damped Jacobian control</span>
+        </div>
+      </div>
+      <nav class="nav-links" aria-label="Primary">
+        <a href="#overview">Overview</a>
+        <a href="#method">Method</a>
+        <a href="#control">Control</a>
+        <a href="#fsm">FSM</a>
+        <a href="#results">Results</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero" id="top">
+      <div class="hero-grid">
+        <div class="card hero-left">
+          <h2 class="hero-title">Task-Space Trajectory Tracking and Manipulation</h2>
+          <p class="hero-sub">
+            A kinematic pick-and-place pipeline built on SE(3) trajectory design, Product of Exponentials forward kinematics,
+            Newton–Raphson inverse kinematics, and a Jacobian pseudoinverse velocity controller (ROS 2 simulation).
+          </p>
+
+          <div class="chips">
+            <span class="chip">SE(3) screw interpolation</span>
+            <span class="chip">Cubic time-scaling</span>
+            <span class="chip">Left-invariant error</span>
+            <span class="chip">Damped least-squares</span>
+            <span class="chip">Kinematic simulator</span>
+          </div>
+
+          <div class="video-wrap">
+            <!-- Put your video file next to index.html and update the src -->
+            <video controls preload="metadata" poster="">
+              <source src="demo.mp4" type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
+            <div class="video-caption">
+              Demo video (replace <span style="font-family:var(--mono);">demo.mp4</span> with your file name if different).
+            </div>
+          </div>
+
+          <div class="btns">
+            <!-- Optional: link to your GitHub repo or PDF report (local) -->
+            <a class="btn" href="#results">Jump to results</a>
+            <a class="btn" href="report.pdf" target="_blank" rel="noopener">Open report (PDF)</a>
+            <a class="btn" href="https://github.com/BenizelosOEllhn/Robotic-Arm-Trajectory-Generation-University-of-Patras-Exercise" target="_blank" rel="noopener">
+              Source repository
+            </a>
+          </div>
+        </div>
+
+        <aside class="card hero-right">
+          <div class="mini" id="overview">
+            <h3 class="anchor">Project overview</h3>
+            <p>
+              The end-effector tracks a sequence of task-space waypoints (home → hover → grasp → lift → depart → place),
+              with the cube attached using a fixed relative transform during the grasped phase.
+            </p>
+          </div>
+
+          <div class="mini">
+            <h3>Core command</h3>
+            <p>
+              The robot receives joint-velocity commands computed from a task-space twist reference and a pose-error feedback term.
+            </p>
+            <div class="mono" aria-label="Control law pseudo-code">
+qdot = J_s^†(theta) * ( V_d + K_p * V_err )
+theta_next = theta + qdot * dt
+            </div>
+          </div>
+
+          <div class="mini">
+            <h3>Key design choices</h3>
+            <ul>
+              <li>Trajectory in SE(3) rather than joint-space.</li>
+              <li>Left-invariant pose error consistent with the space Jacobian.</li>
+              <li>Damping to control Jacobian ill-conditioning near singularities.</li>
+              <li>Finite-state machine for grasp/release sequencing.</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="method" class="anchor">
+      <div class="section-head">
+        <h2>Methodology</h2>
+        <p>
+          The pipeline is organized into kinematics (PoE), trajectory generation in SE(3), inverse kinematics for key waypoints,
+          and closed-loop differential kinematic tracking.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>Forward kinematics (PoE)</h3>
+          <p>
+            The end-effector pose is computed using the Product of Exponentials formulation. Screw axes are defined in the space frame
+            and combined via matrix exponentials to obtain <span style="font-family:var(--mono);">T(θ) ∈ SE(3)</span>.
+          </p>
+          <ul>
+            <li>Space screw axes and home configuration <span style="font-family:var(--mono);">M</span>.</li>
+            <li>Efficient evaluation for FK, link frames, and Jacobians.</li>
+          </ul>
+        </div>
+
+        <div class="panel">
+          <h3>Inverse kinematics (Newton–Raphson)</h3>
+          <p>
+            Waypoints are validated by solving IK numerically using the SE(3) logarithm and a Jacobian-based update rule.
+            Random restarts improve convergence for challenging orientations.
+          </p>
+          <ul>
+            <li>Error computed via <span style="font-family:var(--mono);">log(T_d T(θ)^{-1})</span>.</li>
+            <li>Termination on twist-norm threshold and joint-limit checks.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>Trajectory design in SE(3)</h3>
+          <p>
+            Each segment between consecutive waypoints is generated using screw interpolation (geodesic in SE(3)) combined with cubic
+            time scaling to enforce zero endpoint velocities.
+          </p>
+          <ul>
+            <li>Waypoints: home, hover, pregrasp, grasp, postgrasp (world-lift), depart, place.</li>
+            <li>World-frame lift after grasp avoids tool-frame ambiguity when the gripper points downward.</li>
+          </ul>
+        </div>
+
+        <div class="panel">
+          <h3>Desired twist via left-trivialized differences</h3>
+          <p>
+            The desired spatial twist is approximated from the discrete pose sequence using a left-invariant finite difference.
+            This keeps twists expressed consistently in the space frame.
+          </p>
+          <div class="mono">
+V_d[k] ≈ (1/Δt) * log( T_d[k+1] * T_d[k]^{-1] )
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="control" class="anchor">
+      <div class="section-head">
+        <h2>Task-space velocity control</h2>
+        <p>
+          A differential kinematics controller converts the task-space twist reference into joint velocities through a damped pseudoinverse.
+          Euler integration updates the joint configuration in the kinematic simulator.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>Pose error and feedback</h3>
+          <p>
+            The controller uses a left-invariant pose error computed from the relative transform between desired and current end-effector poses.
+            The logarithm map returns a 6D twist error (angular + linear components).
+          </p>
+          <div class="mono">
+T_err = T_d * T_curr^{-1}
+V_err = log(T_err)
+V_cmd = V_d + K_p * V_err
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Damped pseudoinverse and saturation</h3>
+          <p>
+            Damping prevents large joint velocities near singular configurations (ill-conditioned Jacobians). Commands are clipped to a safe limit.
+          </p>
+          <div class="mono">
+J^† = J^T * ( J J^T + λ^2 I )^{-1}
+qdot = J^† * V_cmd
+qdot = clip(qdot, -qdot_max, qdot_max)
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="fsm" class="anchor">
+      <div class="section-head">
+        <h2>Finite state machine (FSM)</h2>
+        <p>
+          The manipulation logic is implemented as a state machine that sequences motion, grasp/release, and return-home behavior.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <h3>States</h3>
+          <ul>
+            <li><b>Idle</b>: hold home, wait for start command.</li>
+            <li><b>Approach</b>: follow home → hover → pregrasp → grasp.</li>
+            <li><b>Wait grasp</b>: hold grasp pose, enable grasp only if close enough.</li>
+            <li><b>Post-grasp motion</b>: lift + depart + place with cube attached.</li>
+            <li><b>Wait release</b>: hold place pose, enable release only if cube is grasped.</li>
+            <li><b>Return home</b>: interpolate back to home configuration.</li>
+          </ul>
+        </div>
+
+        <div class="panel">
+          <h3>Grasp attachment model</h3>
+          <p>
+            When grasped, the cube remains rigidly attached to the end-effector using a fixed relative transform computed at grasp time.
+            Releasing drops the cube at its current world pose.
+          </p>
+          <div class="mono">
+T_off = (T_ee(t_g))^{-1} * T_cube(t_g)
+T_cube(t) = T_ee(t) * T_off     (while grasped)
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div class="container">
+        <div style="display:flex; flex-wrap:wrap; justify-content:space-between; gap:14px;">
+          <div>
+            <div style="font-weight:650; color:rgba(255,255,255,0.88); margin-bottom:6px;">HW3 — SE(3) manipulation</div>
+            <div>ROS 2 kinematic simulation • Modern Robotics workflow</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="margin-bottom:6px;">Update the assets:</div>
+            <div style="font-family:var(--mono);">demo.mp4, time_scaling_profiles.png, pos_error.png, …</div>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+</body>
+</html>
